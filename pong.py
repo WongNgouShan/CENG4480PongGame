@@ -8,6 +8,7 @@ import multiprocessing
 
 from paho.mqtt import client as mqtt_client
 import paho.mqtt.publish
+import paho.mqtt.subscribe
 
 R = (255, 0, 0)
 G = (0, 200, 0)
@@ -56,7 +57,7 @@ def display(sense,paddle1_y,paddle2_y,ball,host,game_running):
 		sleep(0.25)
 	return
 	
-def joystick(sense,host,paddle1_y,paddle2_y):
+def joystick(sense,host,paddle1_y,paddle2_y,pipe):
 	
 	if host.value == 1:
 		paddle_y = paddle1_y
@@ -70,53 +71,66 @@ def joystick(sense,host,paddle1_y,paddle2_y):
 			if event.direction == 'middle':
 				pass
 			elif event.direction == 'up':
-				if paddle_y.value > 1:
-					paddle_y.value-=1
+				if host.value == 1:
+					if paddle_y.value > 1:
+						paddle_y.value-=1
+				else:
+					if paddle_y.value < 6:
+						paddle_y.value+=1
+						pipe.send(paddle2_y.value)
+						
 			elif event.direction == 'down':
-				if paddle_y.value < 6:
-					paddle_y.value+=1
+				if host.value == 1:
+					if paddle_y.value < 6:
+						paddle_y.value+=1
+				else:
+					if paddle_y.value > 1:
+						paddle_y.value-=1
+						pipe.send(paddle2_y.value)
 			elif event.direction == 'left':
 				pass
 			elif event.direction == 'right':
 				pass
             
-def control(sense,paddle1_y,paddle2_y,ball,ball_velo,host,game_running,p1_score,p2_score):
-    while True:
-            
-        if ball[0] == 15:
-            game_running.value = 0
-            p1_score.value -= 1
-            break
-			
-        if ball[0] == 0:
-            game_running.value = 0
-            p2_score.value -= 1
-            break
-			
-        if ball[0] == 14 and ball_velo[0] > 0:
-            if ball[1] >= paddle1_y.value-1 and ball[1] <= paddle1_y.value+1:
-                ball_velo[0] = -ball_velo[0]
+def control(sense,paddle1_y,paddle2_y,ball,ball_velo,host,game_running,p1_score,p2_score,pipe):
+	while True:
 		
-		#to be remove later
-        if ball[0] == 8 and ball_velo[0] < 0:
-            ball_velo[0] = -ball_velo[0]
-        
+		if ball[0] == 15:
+			game_running.value = 0
+			p1_score.value -= 1
+			break
 			
-        if ball[0] == 1 and ball_velo[0] < 0:
-            if ball[1] >= paddle2_y.value-1 and ball[1] <= paddle2_y.value+1:
-                ball_velo[0] = -ball_velo[0]
+		if ball[0] == 0:
+			game_running.value = 0
+			p2_score.value -= 1
+			break
+
+		if host.value == 1:
+			if ball[0] == 14 and ball_velo[0] > 0:
+				if ball[1] >= paddle1_y.value-1 and ball[1] <= paddle1_y.value+1:
+					ball_velo[0] = -ball_velo[0]
 				
-        if ball[1] == 0 and ball_velo[1] < 0:
-            ball_velo[1] = -ball_velo[1]
-		
-        if ball[1] == 7 and ball_velo[1] > 0:
-            ball_velo[1] = -ball_velo[1]
-				
-        ball[0] = ball[0]+ball_velo[0]
-        ball[1] = ball[1]+ball_velo[1]
-        
-        sleep(0.5)
-    return
+			if ball[0] == 1 and ball_velo[0] < 0:
+				if ball[1] >= paddle2_y.value-1 and ball[1] <= paddle2_y.value+1:
+					ball_velo[0] = -ball_velo[0]
+					
+			if ball[1] == 0 and ball_velo[1] < 0:
+				ball_velo[1] = -ball_velo[1]
+			
+			if ball[1] == 7 and ball_velo[1] > 0:
+				ball_velo[1] = -ball_velo[1]
+					
+			ball[0] = ball[0]+ball_velo[0]
+			ball[1] = ball[1]+ball_velo[1]
+			
+			sleep(0.5)
+		else:
+			msg = pipe.recv().split()
+			ball[0] = int(msg[0])
+			ball[1] = int(msg[1])
+			print(ball[0], ball[1])
+	
+	return
 
 def digit_to_char(digit):
 	if type(digit) is not int:
@@ -154,7 +168,7 @@ def digit_to_char(digit):
 	
 	return ' '    
 	
-def connection(ball, host):
+def connection_ball(ball, host, pipe):
 	broker = 'broker.emqx.io'
 	port = 1883
 	topic_ball = "pong/ball"
@@ -165,7 +179,7 @@ def connection(ball, host):
 
 	def on_connect(client, userdata, flags, rc):
 		if rc == 0:
-			print("Connected to MQTT Broker!")
+			print("(ball)Connected to MQTT Broker!")
 		else:
 			print("Failed to connect, return code %d\n", rc)
 
@@ -179,7 +193,7 @@ def connection(ball, host):
 
 		while game_running.value != 0:
 			time.sleep(0.25)
-			msg = "X = " + str(ball[0]) + "  Y = " + str(ball[1])
+			msg = str(ball[0]) + " " + str(ball[1])
 			result = client.publish(topic_ball, msg)
 			status = result[0]
 			if status == 0:
@@ -191,13 +205,54 @@ def connection(ball, host):
 		
 	else:
 		def on_message(client, userdata, msg):
-			print(f"Received `{msg.payload.decode()}` from `{msg.topic_ball}` topic")
+			print(f"Received `{msg.payload.decode()}` from `{msg.topic}` topic")
+			pipe.send(msg.payload.decode())
 		client.subscribe(topic_ball)
 		client.on_message = on_message
 		
 		while game_running.value != 0:
 			client.loop(timeout=0.25)
 		
+	return
+	
+def connection_paddle(paddle, pipe):
+	broker = 'broker.emqx.io'
+	port = 1883
+	topic_paddle = "pong/paddle"
+	# generate client ID with pub prefix randomly
+	client_id = f'python-mqtt-{random.randint(0, 1000)}'
+	username = 'emqx'
+	password = '**********'
+
+	def on_connect(client, userdata, flags, rc):
+		if rc == 0:
+			print("(paddle)Connected to MQTT Broker!")
+		else:
+			print("Failed to connect, return code %d\n", rc)
+
+	client = mqtt_client.Client(client_id)
+	client.username_pw_set(username, password)
+	client.on_connect = on_connect
+	client.connect(broker, port)
+	
+	if host.value == 1:
+		def on_message(client, userdata, msg):
+			print(f"Received `{msg.payload.decode()}` from `{msg.topic}` topic")
+			paddle2_y.value = int(msg.payload.decode())
+		client.subscribe(topic_paddle)
+		client.on_message = on_message
+		client.loop_forever()
+		
+	else:
+		client.loop_start()
+		while True:
+			msg = pipe.recv()
+			result = client.publish(topic_paddle, msg)
+			status = result[0]
+			if status == 0:
+				print(f"Send `{msg}` to topic `{topic_paddle}`")
+			else:
+				print(f"Failed to send message to topic {topic_paddle}")
 	return
 
 #host_win(bool): host is the winning one? host(bool): is the player host?
@@ -213,8 +268,13 @@ if __name__ == "__main__":
 	auth_info = {"username":'emqx', "password":'**********'}
     
 	sense = SenseHat()
-
-	#pipe1 = multiprocessing.Pipe() 
+	
+	#pipe connect_ball to control
+	pipe1 = multiprocessing.Pipe() 
+	
+	#pipe joy to connect_paddle
+	pipe2 = multiprocessing.Pipe() 
+	
 	host = Value('i',1)
 	game_running = Value('i',0)
 
@@ -243,23 +303,26 @@ if __name__ == "__main__":
 						paho.mqtt.publish.single(topic="pong/start", payload="start", hostname="broker.emqx.io", port=1883, client_id="", auth = auth_info)
 						break
 		else:
-			paho.mqtt.publish.simple(topic="pong/start", hostname="broker.emqx.io", port=1883, client_id="", auth=auth_info)
+			paho.mqtt.subscribe.simple(topics="pong/start", hostname="broker.emqx.io", port=1883, client_id="", auth=auth_info)
 		
 		game_running.value = 1
 
 		p1 = multiprocessing.Process(target=display, args=(sense,paddle1_y,paddle2_y,ball,host,game_running))
-		p2 = multiprocessing.Process(target=control, args=(sense,paddle1_y,paddle2_y,ball,ball_velo,host,game_running,p1_score,p2_score))
-		p3 = multiprocessing.Process(target=joystick, args=(sense,host,paddle1_y,paddle2_y))
-		p4 = multiprocessing.Process(target=connection, args=(ball,host))
+		p2 = multiprocessing.Process(target=control, args=(sense,paddle1_y,paddle2_y,ball,ball_velo,host,game_running,p1_score,p2_score,pipe1[1]))
+		p3 = multiprocessing.Process(target=joystick, args=(sense,host,paddle1_y,paddle2_y,pipe2[0]))
+		p4 = multiprocessing.Process(target=connection_ball, args=(ball,host,pipe1[0]))
+		p5 = multiprocessing.Process(target=connection_paddle, args=(paddle2_y,pipe2[1]))
 		p1.start()
 		p2.start()
 		p3.start()
 		p4.start()
+		p5.start()
 
 		p1.join()
 		p2.join()
 		p3.terminate()
 		p4.join()
+		p5.terminate()
 
 		sense.set_rotation(270)
 		
@@ -280,7 +343,7 @@ if __name__ == "__main__":
 			start_ball = decide_start_ball(True, host.value == 1)
 			ball[0] = 1
 			ball[1] = paddle2_y.value
-			ball_velo = [-1,ball_velo[1]]
+			ball_velo = [1,ball_velo[1]]
 		
 	p4.terminate()
 	
