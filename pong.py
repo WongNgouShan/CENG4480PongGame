@@ -10,29 +10,13 @@ from paho.mqtt import client as mqtt_client
 import paho.mqtt.publish
 import paho.mqtt.subscribe
 
+import Pong_Layout as layout
+
 R = (255, 0, 0)
 G = (0, 200, 0)
 B = (0, 0, 255)
 BK = (0,0,0)
 W = (255,255,255)
-
-win = [R,BK,R,BK,R,BK,W,BK,
-R,BK,R,BK,R,BK,W,BK,
-BK,R,BK,R,BK,BK,W,BK,
-BK,BK,BK,BK,BK,BK,W,BK,
-W,BK,R,R,BK,BK,W,BK,
-W,BK,R,BK,R,BK,BK,BK,
-W,BK,R,BK,R,BK,W,BK,
-BK,BK,BK,BK,BK,BK,BK,BK]
-
-lose = [W,BK,BK,BK,R,R,R,BK,
-W,BK,BK,BK,R,BK,R,BK,
-W,W,W,BK,R,R,R,BK,
-R,R,R,BK,W,W,W,BK,
-R,BK,BK,BK,W,BK,BK,BK,
-R,R,R,BK,W,W,W,BK,
-BK,BK,R,BK,W,BK,BK,BK,
-R,R,R,BK,W,W,W,BK]
 
 def display(sense,paddle1_y,paddle2_y,ball,host,game_running):
 	while True:
@@ -98,17 +82,17 @@ def IMU(sense,host,paddle1_y,paddle2_y):
 	while True:
 		roll = sense.get_orientation()["roll"]
 		if 0 < roll <= 15:
-			paddle_y.value = 4
+			paddle_y.value = 4 if host.value == 1 else 3
 		elif 15 < roll <= 30:
-			paddle_y.value = 5
+			paddle_y.value = 5 if host.value == 1 else 2
 		elif 30 < roll <= 177:
-			paddle_y.value = 6
+			paddle_y.value = 6 if host.value == 1 else 1
 		elif 360 > roll >= 345:
-			paddle_y.value = 3
+			paddle_y.value = 3 if host.value == 1 else 4
 		elif 345 > roll >= 330:
-			paddle_y.value = 2
+			paddle_y.value = 2 if host.value == 1 else 5
 		elif 330 > roll >= 183:
-			paddle_y.value = 1
+			paddle_y.value = 1 if host.value == 1 else 6
 		sleep(0.05)
 
 def control(sense,paddle1_y,paddle2_y,ball,ball_velo,host,game_running,p1_score,p2_score,pipe_receive,pipe_send):
@@ -227,6 +211,10 @@ def connection_ball(ball, host, pipe_send, pipe_receive):
 	def on_message(client, userdata, msg):
 		print(f"Received `{msg.payload.decode()}` from `{msg.topic}` topic")
 		pipe_send.send(msg.payload.decode())
+	def on_disconnect(client, userdata, rc):
+		if rc != 0:
+			print("Unexpected disconnection.")
+	client.on_disconnect = on_disconnect
 	client.subscribe(topic_ball2)
 	client.on_message = on_message
 	client.loop_start()
@@ -295,14 +283,48 @@ if __name__ == "__main__":
 	auth_info = {"username":'emqx', "password":'**********'}
     
 	sense = SenseHat()
+
+	control_mode = "tilt"
+	player = "p1"
+	menu_select = "up"
+
+	while True:
+		sense.set_pixels(layout.get_screen(control_mode, player, menu_select))
+		event = sense.stick.wait_for_event()
+		if event.action=='pressed':
+			if event.direction == 'middle':
+				break
+			elif event.direction == 'up':
+				if menu_select == "down":
+					menu_select = "up"
+					
+			elif event.direction == 'down':
+				if menu_select == "up":
+					menu_select = "down"
+
+			elif event.direction == 'left' or event.direction == 'right':
+				
+				if menu_select == "up":
+					if control_mode == "tilt":
+						control_mode = "joy"
+					elif control_mode == "joy":
+						control_mode = "tilt"
+						
+				elif menu_select == "down":
+					if player == "p1":
+						player = "p2"
+					elif player == "p2":
+						player = "p1"
 	
+	control_mode = IMU if control_mode == "tilt" else joystick
+
 	#pipe connect_ball to control
 	pipe1 = multiprocessing.Pipe() 
 	
 	#pipe joy to connect_paddle
 	pipe2 = multiprocessing.Pipe() 
-	
-	host = Value('i',1)
+
+	host = Value('i', 1 if player == "p1" else 0)
 	game_running = Value('i',0)
 
 	paddle1_y = Value('i',4)
@@ -336,7 +358,7 @@ if __name__ == "__main__":
 
 		p1 = multiprocessing.Process(target=display, args=(sense,paddle1_y,paddle2_y,ball,host,game_running))
 		p2 = multiprocessing.Process(target=control, args=(sense,paddle1_y,paddle2_y,ball,ball_velo,host,game_running,p1_score,p2_score,pipe1[1],pipe2[0]))
-		p3 = multiprocessing.Process(target=IMU, args=(sense,host,paddle1_y,paddle2_y))
+		p3 = multiprocessing.Process(target=control_mode, args=(sense,host,paddle1_y,paddle2_y))
 		p4 = multiprocessing.Process(target=connection_ball, args=(ball,host,pipe1[0],pipe2[1]))
 		# p5 = multiprocessing.Process(target=connection_paddle, args=(paddle2_y,pipe2[1]))
 		p1.start()
@@ -377,9 +399,9 @@ if __name__ == "__main__":
 	sense.set_rotation(270)
 	
 	if p1_score.value == 0 and host.value == 1 or p2_score.value == 0 and host.value == 0:
-		sense.set_pixels(lose)
+		sense.set_pixels(layout.lose)
 	else:
-		sense.set_pixels(win)
+		sense.set_pixels(layout.win)
 	
 	sleep(2)
 
